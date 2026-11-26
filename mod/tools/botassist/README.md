@@ -1210,6 +1210,29 @@ The room's panels show the room's difficulty (`#CSO_Bot_Difficulty_<n>`), not wh
 (on botassist's ILocalize hook, only for calls from GameUI 0x10442bd0 and 0x10446080) answers with the bots' common skill or
 "Random" if they differ. Bots that keep the room's skill keep the room's text. It reads `GET /api/roombots`.
 
+## Bots in each other's way (every mode; crowding.inl)
+
+Bots pushed into each other at ladders and stood stuck there, and the stuck check couldn't tell: its body traces
+(`BodyFraction`) look through people on purpose, so a bot pressed against another one logged "nothing in the way of
+its body" (1,822 of 2,620 stuck reports in one botassist.log, most on de_dust, Soccer and zm_chosun). The decisions are in
+`crowding.inl`, which has no game calls, so a test builds it alone; the game side is in botassist.cpp.
+
+- Ladders in turn (`LadderQueueWait`, from `NavTraverse` for a bot not on a ladder yet): a ladder within the next three
+  waypoints and 200 u (`LADDER_QUEUE`), at the end the bot gets on at. It waits while anyone is on it (movetype fly in
+  the brush) coming the other way or stopped, or going the same way but less than 80 u (`LADDER_GAP`) from that end,
+  or while another bot walking up to the ladder is nearer it (`g_ladderQueue`; as near within 8 u: the lower
+  `CrowdKey`, formation slot then edict, goes first). Waiting it stands 96 u (`LADDER_WAIT_BACK`) from the ladder,
+  backing off if closer (not over a drop), with no repath and no stuck count (`ladderWaitUntil`). After 8 s
+  (`LADDER_WAIT_MAX`) the ladder's ends cost `NAV_AVOID_COST` for 12 s, so it takes another way if there is one,
+  else this ladder without waiting. botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on
+  it, N walking up to it", "bot N gave up waiting for ladder L after 8 s".
+- In each other's way (`NavProgress`, when a bot is stuck): `PlayerInTheWay` traces the hull with people in it, or
+  takes the nearest player within 48 u on the side it's going. Then the area ahead isn't avoided and the bot doesn't
+  walk back: of two bots the one with the higher `CrowdKey` steps aside for 1 s (`StepAside`: 64 u to a free side,
+  else back), the other keeps going; for a person, or a bot botassist doesn't drive, it steps aside. botassist.log:
+  "stuck: ... : bot 'X' in the way, steps aside | keeps going (the other one steps aside)".
+- Holdout places (modes/zombie_holdout.inl): see the holdout section.
+
 ## Deadly places in botassist's paths (shared)
 
 `UpdateHurtZones` lists the map's solid `trigger_hurt` brushes with damage (entvars solid +0x11c, dmg +0x210, from
@@ -1365,6 +1388,13 @@ The stock AI's move is turned with the view: its direction on the ground stays t
 turned to the zombie kept "backwards" of its old view and ran into it, 25285f1). Holdout bots walking to their spot
 stand and shoot when a zombie in sight within 900 is within 50 degrees of their way; 5 s like that, another spot.
 Walkers pick places away from the zombies they see.
+
+Places in a spot: its areas nearest the middle first, each 72 u (`HOLD_PLACE_GAP`, `SpreadPoints`) from the
+others; side by side areas of the mesh had the group standing shoulder to shoulder ("holdout: N spots ...: (x y z) N
+places"). A bot takes the place the fewest of its group stand on (`LeastUsedPlace`): it took "the next number", the
+size of the group, so once an earlier bot was infected the next one to join walked onto the place of one still there.
+A bot that turns zombie frees its spot at once: its old spot counted for the group till its next life as a human, so
+a new round's groups and places started from the last round's.
 
 ## Zombie Hero and its versions (modes 14, 44, 45, 58) with room bots
 

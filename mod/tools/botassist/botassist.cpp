@@ -452,6 +452,9 @@ static bool CanSee(void* bot, V3 eye, void* target)
     return Trace(eye, Center(target), bot, 0, tr) || tr.pHit == target;
 }
 
+// bots in each other's way: ladders taken in turn, holdout places, who steps aside (the decisions, no game calls)
+#include "crowding.inl"
+
 // ---------------------------------------------------------------- navigation mesh (CS:CZ .nav, version 5)
 // area attributes (CS:CZ): crouch, jump (a jump gets there), precise (no shortcuts or steering), no jump
 static const unsigned char NAV_CROUCH = 1, NAV_JUMP = 2, NAV_PRECISE = 4, NAV_NO_JUMP = 8;
@@ -1428,6 +1431,10 @@ struct BotState
     float gapJumpAt = -100;      // NavTraverse: the last jump over a gap or onto a ledge
     float rideUntil = 0;         // NavRideStep: waiting for or on a lift, train or teleport: no repath, not stuck
     bool climbing = false;       // NavTraverse: on its way up or down a ladder
+    float ladderWaitSince = -1, ladderWaitLast = -100; // LadderQueueWait: waiting for its turn at a ladder since
+    float ladderWaitUntil = 0;   // waiting: no repath, not stuck (NextWaypoint, NavProgress)
+    int ladderSkip = -1;         // a ladder it gave up waiting for: taken without waiting till ladderSkipUntil
+    float ladderSkipUntil = 0;
     int onLink = 0;              // NavTraverse: the drawn link it is taking (its path flag), 0: none
     float steerSide = 1, steerUntil = 0; // keeps going around an obstacle by the same side
     float jumpAt = -100;
@@ -1501,6 +1508,21 @@ struct BotState
 };
 static BotState g_bots[64];
 static Order g_teamOrder = ORDER_FOLLOW;
+
+// another bot's state, if botassist keeps one for it (none is made)
+static BotState* FindBotState(void* edict)
+{
+    for (auto& b : g_bots)
+        if (edict && b.edict == edict)
+            return &b;
+    return nullptr;
+}
+
+// the order two bots in each other's way go in (crowding.inl): the formation slot, then the edict
+static long long CrowdKey(const BotState& st, void* bot)
+{
+    return ((long long)st.slot << 32) | (long long)(DWORD)bot;
+}
 static float g_lastMonsterSeen = -100;
 static std::vector<std::string> g_seen;
 
@@ -1713,8 +1735,75 @@ static bool CoopMode();
 // was going into costs a lot for a while, so the new path takes another way if there is one, and the second time it also walks back
 // to where it came from before trying again.
 static const float NAV_STUCK_TIME = 1.5f, NAV_STUCK_MOVE = 64.0f, NAV_CRUMB_STEP = 96.0f, NAV_BACK_TIME = 1.2f, NAV_BACK_MIN = 80.0f;
+static const float NAV_ASIDE = 64.0f, NAV_ASIDE_TIME = 1.0f;
+
+// a living player in the way to wp: the body checks (BodyFraction) look through people, so a bot pressed against
+// another one read as "nothing in the way of its body" and turned away from an area that was free
+static void* PlayerInTheWay(void* bot, V3 pos, V3 wp)
+{
+    V3 to{ wp.x, wp.y, pos.z };
+    float d = Len2D(to - pos);
+    if (d < 1.0f)
+        return nullptr;
+    V3 dir = (to - pos) * (1.0f / d);
+    void* found = nullptr;
+    if (g_TraceHull)
+    {
+        TraceResult tr;
+        V3 lift{ 0, 0, BODY_LIFT };
+        HullLine(pos + lift, pos + dir * (std::min)(d, NAV_ASIDE) + lift, 0, bot, tr);
+        if (tr.pHit && tr.pHit != bot && (F<int>(Vars(tr.pHit), EV_FLAGS) & FL_CLIENT) && Alive(tr.pHit))
+            found = tr.pHit;
+    }
+    if (!found)
+    {
+        // pressed against each other (the hull starts inside them): the nearest one on the side it's going
+        float best = 48.0f;
+        ForEntitiesNear(pos, 48.0f, [&](void* e) {
+            if (e == bot || !(F<int>(Vars(e), EV_FLAGS) & FL_CLIENT) || !Alive(e))
+                return;
+            V3 o = Origin(e) - pos;
+            float od = Len2D(o);
+            if (od < best && fabsf(o.z) < 72.0f && o.x * dir.x + o.y * dir.y > 0.0f)
+            {
+                best = od;
+                found = e;
+            }
+        });
+    }
+    return found;
+}
+
+// steps out of the way for NAV_ASIDE_TIME: to a free side, else back (NextWaypoint walks to navBackTo meanwhile)
+static void StepAside(void* bot, BotState& st, V3 pos, V3 wp, float now)
+{
+    V3 to{ wp.x, wp.y, pos.z };
+    float d = Len2D(to - pos);
+    V3 dir = d > 1.0f ? (to - pos) * (1.0f / d) : V3{ 1, 0, 0 };
+    V3 perp{ -dir.y, dir.x, 0 };
+    float first = st.unstickSide;
+    V3 aside = pos - dir * NAV_ASIDE;
+    for (float s : { first, -first })
+        if (BodyClear(bot, pos, pos + perp * (s * NAV_ASIDE)))
+        {
+            aside = pos + perp * (s * NAV_ASIDE);
+            st.unstickSide = s;
+            break;
+        }
+    st.navBackTo = aside;
+    st.navBackUntil = now + NAV_ASIDE_TIME;
+}
+
 static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
 {
+    if (now < st.ladderWaitUntil)
+    {
+        // waiting for its turn at a ladder (LadderQueueWait): not stuck, and NavTraverse keeps it waiting
+        st.navLastCall = now;
+        st.navAnchor = pos;
+        st.navAnchorAt = now;
+        return;
+    }
     if (!st.navCrumbs.empty() && Len(pos - st.navCrumbs.back()) > 400.0f)
         st.navCrumbs.clear(); // respawned
     if (st.navCrumbs.empty() || Len2D(pos - st.navCrumbs.back()) > NAV_CRUMB_STEP)
@@ -1742,7 +1831,18 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
     if (st.navStuck >= 12 && CoopMode() && CoopUnstick(bot, st, pos))
         return; // ~20 s stuck in a co-op mode (a Zombie Shelter bot that spawned on a roof): put on the ground nearby
     V3 wp = st.pathIndex < st.path.size() ? st.path[st.pathIndex] : goal;
-    int ahead = AreaAt(wp);
+    // another player in the way: the area ahead is fine, so no other way and no walking back. Of two bots the one with
+    // the higher key steps aside and the other keeps going; for a person (or a bot botassist doesn't drive) it steps aside.
+    void* blocker = PlayerInTheWay(bot, pos, wp);
+    bool asides = false;
+    if (blocker)
+    {
+        BotState* o = (F<int>(Vars(blocker), EV_FLAGS) & FL_FAKECLIENT) ? FindBotState(blocker) : nullptr;
+        asides = GivesWay(o != nullptr, CrowdKey(st, bot), o ? CrowdKey(*o, blocker) : 0);
+        if (asides)
+            StepAside(bot, st, pos, wp, now);
+    }
+    int ahead = blocker ? -1 : AreaAt(wp);
     if (ahead >= 0 && ahead != AreaAt(pos))
     {
         for (size_t i = st.navAvoid.size(); i-- > 0;)
@@ -1752,7 +1852,7 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
             st.navAvoid.erase(st.navAvoid.begin());
         st.navAvoid.push_back({ ahead, now + NAV_AVOID_TIME });
     }
-    if (st.navStuck >= 2)
+    if (st.navStuck >= 2 && !blocker)
         for (size_t i = st.navCrumbs.size(); i-- > 0;)
             if (Len2D(st.navCrumbs[i] - pos) >= NAV_BACK_MIN)
             {
@@ -1764,7 +1864,12 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
     static int reports = 0, reportLevel = -1;
     if (reportLevel != g_nav.level)
         reportLevel = g_nav.level, reports = 0;
-    if (reports++ < 300)
+    if (blocker && reports++ < 300)
+        Log("stuck: bot %d at (%.0f %.0f %.0f) going to (%.0f %.0f %.0f) by (%.0f %.0f %.0f), %d in a row: %s '%s' in the way, %s",
+            st.slot, pos.x, pos.y, pos.z, goal.x, goal.y, goal.z, wp.x, wp.y, wp.z, st.navStuck,
+            (F<int>(Vars(blocker), EV_FLAGS) & FL_FAKECLIENT) ? "bot" : "player", String(F<int>(Vars(blocker), EV_NETNAME)),
+            asides ? "steps aside" : "keeps going (the other one steps aside)");
+    else if (reports++ < 300)
     {
         TraceResult tr;
         float got = BodyFraction(bot, pos, V3{ wp.x, wp.y, pos.z }, tr);
@@ -1798,7 +1903,8 @@ static bool NextWaypoint(void* bot, BotState& st, V3 pos, V3 goal, float arrive,
         out = goal; // no mesh: straight line
         return true;
     }
-    if (!riding && (st.path.empty() || now >= st.nextRepath || Len(goal - st.pathGoal) > 120.0f))
+    bool ladderWait = now < st.ladderWaitUntil; // (waiting for its turn at a ladder: the path through it stays)
+    if (!riding && (st.path.empty() || (now >= st.nextRepath && !ladderWait) || Len(goal - st.pathGoal) > 120.0f))
     {
         g_navAvoid = &st.navAvoid;
         if (!FindPath(pos, goal, st.path, partial))
@@ -6265,6 +6371,147 @@ static bool NavRideStep(void* bot, BotState& st, const NavRide& r, V3 pos, V3 fe
     return true;
 }
 
+// ---- ladders in turn (crowding.inl decides): every bot whose path went up a ladder walked into it at once, so five bots
+// on zm_chosun's ladders pushed into each other, the ones climbing up into the ones coming down. A bot within
+// LADDER_QUEUE of a ladder on its path waits while someone is on it the other way (or stopped, or still at this end),
+// or another bot walking up to it is nearer: LADDER_WAIT_BACK from the ladder, out of the way of whoever gets off.
+// After LADDER_WAIT_MAX it takes another way if there is one (the ladder's ends cost NAV_AVOID_COST), else this ladder
+// without waiting.
+static const float LADDER_QUEUE = 200.0f, LADDER_WAIT_BACK = 96.0f, LADDER_WAIT_MAX = 8.0f;
+struct LadderApproach
+{
+    void* bot;
+    int ladder;
+    float dist;
+    long long key;
+    float at;
+};
+static std::vector<LadderApproach> g_ladderQueue; // bots walking up to a ladder, refreshed each move
+
+// 2D distance from p to the ladder's brush
+static float LadderGap(const NavLadder& l, V3 p)
+{
+    float dx = p.x < l.lo.x ? l.lo.x - p.x : p.x > l.hi.x ? p.x - l.hi.x : 0.0f;
+    float dy = p.y < l.lo.y ? l.lo.y - p.y : p.y > l.hi.y ? p.y - l.hi.y : 0.0f;
+    return sqrtf(dx * dx + dy * dy);
+}
+
+// true: the bot waits this move (fwd/side set)
+static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const float* aim, float& fwd, float& side,
+                            unsigned short& buttons, float now)
+{
+    int ladder = -1;
+    bool up = false;
+    size_t last = (std::min)(st.path.size() - 1, st.pathIndex + 2);
+    for (size_t k = st.pathIndex; k <= last && k < st.pathFlags.size(); k++)
+    {
+        int f = st.pathFlags[k];
+        if (f > 0 && f <= (int)g_ladders.size())
+        {
+            ladder = f - 1;
+            up = st.path[k].z > feet.z;
+            break;
+        }
+        if (f)
+            break; // a ride or a drawn link comes first
+    }
+    if (now - st.ladderWaitLast > 0.5f || now < st.ladderWaitLast)
+        st.ladderWaitSince = -1; // (it wasn't waiting a moment ago)
+    if (ladder < 0 || (ladder == st.ladderSkip && now < st.ladderSkipUntil))
+        return false;
+    const NavLadder& l = g_ladders[ladder];
+    float entryZ = up ? l.lo.z : l.hi.z;
+    float gap = LadderGap(l, pos);
+    if (gap > LADDER_QUEUE || fabsf(feet.z - entryZ) > 100.0f)
+        return false;
+    long long key = CrowdKey(st, bot);
+    std::vector<LadderOther> others;
+    // on it: anyone climbing (movetype fly) within the ladder's brush
+    V3 c{ (l.lo.x + l.hi.x) * 0.5f, (l.lo.y + l.hi.y) * 0.5f, (l.lo.z + l.hi.z) * 0.5f };
+    ForEntitiesNear(c, Len(l.hi - l.lo) * 0.5f + 64.0f, [&](void* e) {
+        unsigned char* v = Vars(e);
+        if (e == bot || !(F<int>(v, EV_FLAGS) & FL_CLIENT) || !Alive(e) || F<int>(v, NAV_EV_MOVETYPE) != NAV_MOVETYPE_FLY)
+            return;
+        V3 o = Origin(e);
+        if (LadderGap(l, o) > 24.0f || o.z < l.lo.z - 40.0f || o.z > l.hi.z + 76.0f)
+            return;
+        float vz = ((float*)(v + EV_VELOCITY))[2];
+        others.push_back({ true, vz > 20.0f ? 1 : vz < -20.0f ? -1 : 0, o.z - 36.0f, 0.0f, 0 });
+    });
+    // walking up to it: the other bots here (entries older than a few moves are gone)
+    bool listed = false;
+    for (size_t i = g_ladderQueue.size(); i-- > 0;)
+    {
+        LadderApproach& a = g_ladderQueue[i];
+        if (a.bot == bot)
+        {
+            a = { bot, ladder, gap, key, now };
+            listed = true;
+            continue;
+        }
+        if (now - a.at > 0.3f || now < a.at)
+        {
+            g_ladderQueue.erase(g_ladderQueue.begin() + i);
+            continue;
+        }
+        if (a.ladder == ladder)
+            others.push_back({ false, 0, 0.0f, a.dist, a.key });
+    }
+    if (!listed)
+        g_ladderQueue.push_back({ bot, ladder, gap, key, now });
+    if (!LadderMustWait(up ? 1 : -1, gap, key, entryZ, others))
+        return false;
+    static int reports = 0, reportLevel = -1;
+    if (reportLevel != g_nav.level)
+        reportLevel = g_nav.level, reports = 0;
+    if (st.ladderWaitSince < 0)
+    {
+        st.ladderWaitSince = now;
+        int on = 0;
+        for (const LadderOther& o : others)
+            on += o.on;
+        if (reports++ < 80)
+            Log("bot %d waits for its turn at ladder %d (%s, %.0f u from it): %d on it, %d walking up to it", st.slot, ladder,
+                up ? "up" : "down", gap, on, (int)others.size() - on);
+    }
+    st.ladderWaitLast = now;
+    if (now - st.ladderWaitSince > LADDER_WAIT_MAX)
+    {
+        // waited long enough: another way if there is one (the ends of this ladder cost more for a while), else this one
+        for (int area : { l.bottom, l.top })
+            if (area >= 0)
+            {
+                if (st.navAvoid.size() >= 8)
+                    st.navAvoid.erase(st.navAvoid.begin());
+                st.navAvoid.push_back({ area, now + NAV_AVOID_TIME });
+            }
+        st.ladderSkip = ladder;
+        st.ladderSkipUntil = now + NAV_AVOID_TIME;
+        st.ladderWaitSince = -1;
+        st.ladderWaitUntil = 0;
+        st.nextRepath = 0;
+        if (reports++ < 80)
+            Log("bot %d gave up waiting for ladder %d after %.0f s: another way, or this ladder without waiting", st.slot, ladder,
+                LADDER_WAIT_MAX);
+        return false;
+    }
+    st.ladderWaitUntil = now + 0.3f;
+    fwd = side = 0;
+    buttons &= ~IN_JUMP;
+    if (gap < LADDER_WAIT_BACK)
+    {
+        // too close: out of the way of whoever gets off (away from the ladder, if the floor goes on)
+        float yaw = YawOf(pos - c);
+        if (!DropAhead(bot, pos, yaw, 72.0f, SAFE_DROP))
+        {
+            float rel = AngleDiff(yaw, aim[1]) / RAD;
+            fwd = cosf(rel) * 150.0f;
+            side = -sinf(rel) * 150.0f;
+        }
+    }
+    return true;
+}
+
 static void NavTraverse(void* bot, BotState& st, float* aim, float& fwd, float& side, unsigned short& buttons)
 {
     unsigned char* v = Vars(bot);
@@ -6346,6 +6593,9 @@ static void NavTraverse(void* bot, BotState& st, float* aim, float& fwd, float& 
         return;
     }
     st.onLink = 0;
+    // ---- a ladder someone else is using, or will first: wait for the turn
+    if (!onLadder && LadderQueueWait(bot, st, pos, feet, aim, fwd, side, buttons, now))
+        return;
     // ---- a ladder
     if (flag > 0 && flag <= (int)g_ladders.size() && fabsf(feet.z - wp.z) > 24.0f)
     {

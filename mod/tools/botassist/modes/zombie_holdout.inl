@@ -16,6 +16,7 @@
 static const int HOLD_SPOTS = 8, HOLD_GROUP = 4, HOLD_ROAM_PER = 8, HOLD_ROAM_FROM = 6;
 static const float HOLD_ROAM_MIN = 700.0f, HOLD_ROAM_MAX = 2500.0f, HOLD_ROAM_TIME = 25.0f;
 static const float HOLD_SEPARATION = 900.0f, HOLD_RADIUS = 220.0f, HOLD_FLEE = 170.0f, HOLD_MIN_SIZE = 40.0f;
+static const float HOLD_PLACE_GAP = 72.0f; // between two places of a spot (crowding.inl's SpreadPoints)
 
 struct HoldSpot
 {
@@ -139,12 +140,23 @@ static void HoldPickSpots()
         HoldSpot s;
         s.at = at;
         s.area = c.area;
+        // the places: the spot's areas nearest its middle first, each HOLD_PLACE_GAP from the others (side by side areas of
+        // the mesh put the group shoulder to shoulder)
+        std::vector<int> inSpot;
         for (size_t j = 0; j < n; j++)
         {
             const NavArea& b = g_nav.areas[j];
             if (Len2D(b.center - at) < HOLD_RADIUS && fabsf(b.center.z - at.z) < 60.0f && part[j] == best && !NavAreaHurts((int)j))
-                s.stand.push_back((int)j);
+                inSpot.push_back((int)j);
         }
+        std::sort(inSpot.begin(), inSpot.end(), [&](int x, int y) {
+            return Len2D(g_nav.areas[x].center - at) < Len2D(g_nav.areas[y].center - at);
+        });
+        std::vector<std::pair<float, float>> pts;
+        for (int j : inSpot)
+            pts.push_back({ g_nav.areas[j].center.x, g_nav.areas[j].center.y });
+        for (int k : SpreadPoints(pts, HOLD_PLACE_GAP))
+            s.stand.push_back(inSpot[k]);
         if (s.stand.empty())
             s.stand.push_back(c.area);
         g_holdSpots.push_back(s);
@@ -155,7 +167,8 @@ static void HoldPickSpots()
     for (auto& s : g_holdSpots)
     {
         char b[64];
-        snprintf(b, sizeof(b), "%s(%.0f %.0f %.0f)", list.empty() ? "" : ", ", s.at.x, s.at.y, s.at.z);
+        snprintf(b, sizeof(b), "%s(%.0f %.0f %.0f) %d places", list.empty() ? "" : ", ", s.at.x, s.at.y, s.at.z,
+                 (int)s.stand.size());
         list += b;
     }
     Log("holdout: %d spots on %s for the human bots' groups: %s", (int)g_holdSpots.size(), g_nav.map.c_str(), list.c_str());
@@ -220,7 +233,19 @@ static void HoldAssign(void* bot, HoldBot& h, bool join, int avoid = -1)
         return;
     int was = h.spot;
     h.spot = pick;
-    h.place = count[pick];
+    // the place none of the group stands on: "the next number" (count[pick]) put a bot that joined on the place of one
+    // still there once an earlier one was infected
+    std::vector<int> taken;
+    int places = (int)g_holdSpots[pick].stand.size();
+    for (const ZfPlayer& pl : ZfPlayers())
+    {
+        if (pl.zombie || pl.e == bot)
+            continue;
+        auto it = g_holdBots.find(pl.e);
+        if (it != g_holdBots.end() && it->second.spot == pick && !it->second.roam && places > 0)
+            taken.push_back(it->second.place % places);
+    }
+    h.place = LeastUsedPlace(taken, places);
     static int reports = 0;
     if (reports++ < 80)
         Log("holdout: bot '%s' %s spot %d (%.0f %.0f), %d humans there with it, %d spots in use",
@@ -355,6 +380,17 @@ static bool HoldoutMove(void* bot, BotState& st, float viewYaw, float& fwd, floa
     if (g_holdLevel != g_nav.level)
         HoldPickSpots();
     unsigned char* p = (unsigned char*)PrivateOf(bot);
+    if (p && Readable(p, 0x2170) && p[0x2166])
+    {
+        // a zombie now: its spot and place are free (they counted for its group till its next life as a human, so the
+        // groups and places of a new round started from the last round's)
+        auto it = g_holdBots.find(bot);
+        if (it != g_holdBots.end())
+        {
+            it->second.spot = -1;
+            it->second.roam = false;
+        }
+    }
     if (g_holdSpots.size() < 2 || !p || !Readable(p, 0x2170) || p[0x2166] || st.ordered)
         return false;
     handled = true; // (the single-group regrouping isn't used in these modes)
