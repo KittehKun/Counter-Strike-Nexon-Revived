@@ -1411,9 +1411,11 @@ turned to the zombie kept "backwards" of its old view and ran into it, 25285f1).
 stand and shoot when a zombie in sight within 900 is within 50 degrees of their way; 5 s like that, another spot.
 Walkers pick places away from the zombies they see.
 
-Places in a spot: its areas nearest the middle first, each 72 u (`HOLD_PLACE_GAP`, `SpreadPoints`) from the
-others; side by side areas of the mesh had the group standing shoulder to shoulder ("holdout: N spots ...: (x y z) N
-places"). A bot takes the place the fewest of its group stand on (`LeastUsedPlace`): it took "the next number", the
+Places in a spot: points inside its areas, every 32 u and at least 16 u from their edges, on the floor (`GridPoints`,
+`HOLD_PLACE_STEP`, `HOLD_PLACE_INSET`), nearest the middle first, each 72 u (`HOLD_PLACE_GAP`, `SpreadPoints`) from the
+others, up to 12 (`HOLD_PLACES_MAX`); side by side points had the group standing shoulder to shoulder ("holdout: N
+spots ...: (x y z) N places"). The areas' middles alone gave de_dust's spots 1 or 2 places for groups of 5, so bots
+walked onto a place another one stood on. A bot takes the place the fewest of its group stand on (`LeastUsedPlace`): it took "the next number", the
 size of the group, so once an earlier bot was infected the next one to join walked onto the place of one still there.
 A bot that turns zombie frees its spot at once: its old spot counted for the group till its next life as a human, so
 a new round's groups and places started from the last round's.
