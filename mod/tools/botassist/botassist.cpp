@@ -1899,6 +1899,9 @@ static void StepAside(void* bot, BotState& st, V3 pos, V3 wp, float now)
 // botassist.log's perf lines, for comparing builds: stuck reports in the last 30 s by what was in the way (the
 // "stuck:" lines stop at 300 a map, these don't), and how many of them were bots the game held still
 static int g_stuckCounts[4]; // a player, something, nothing; held still (of those)
+// the same for ladders (the "takes a ladder" lines stop at 60 a map, the waits at 80): climbs started, waits for a
+// turn, waits given up (LadderQueueWait)
+static int g_ladderCounts[3];
 
 static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
 {
@@ -6003,12 +6006,16 @@ static void PerfReport()
             Log("perf: stuck reports %d (a player in the way %d, something %d, nothing %d; %d of them held still)",
                 g_stuckCounts[0] + g_stuckCounts[1] + g_stuckCounts[2], g_stuckCounts[0], g_stuckCounts[1], g_stuckCounts[2],
                 g_stuckCounts[3]);
+            Log("perf: ladders: %d climbs, %d waits for a turn, %d gave up waiting", g_ladderCounts[0], g_ladderCounts[1],
+                g_ladderCounts[2]);
         }
     }
     for (double& d : g_perfPart)
         d = 0;
     g_perfMoves = g_perfPaths = g_perfAreaAt = 0;
     for (int& c : g_stuckCounts)
+        c = 0;
+    for (int& c : g_ladderCounts)
         c = 0;
     g_perfMoveSec = g_perfPathSec = g_perfFrameSec = 0;
     since = now;
@@ -6614,6 +6621,7 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
     if (st.ladderWaitSince < 0)
     {
         st.ladderWaitSince = now;
+        g_ladderCounts[1]++;
         int on = 0;
         for (const LadderOther& o : others)
             on += o.on;
@@ -6632,6 +6640,7 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
                     st.navAvoid.erase(st.navAvoid.begin());
                 st.navAvoid.push_back({ area, now + NAV_AVOID_TIME });
             }
+        g_ladderCounts[2]++;
         st.ladderSkip = ladder;
         st.ladderSkipUntil = now + NAV_AVOID_TIME;
         st.ladderWaitSince = -1;
@@ -6777,6 +6786,8 @@ static void NavTraverse(void* bot, BotState& st, float* aim, float& fwd, float& 
         static int reports = 0, reportLevel = -1;
         if (reportLevel != g_nav.level)
             reportLevel = g_nav.level, reports = 0;
+        if (!st.climbing)
+            g_ladderCounts[0]++;
         if (!st.climbing && reports++ < 60)
             Log("bot %d takes a ladder %s at (%.0f %.0f %.0f) to (%.0f %.0f %.0f)", st.slot, up ? "up" : "down", pos.x, pos.y, pos.z,
                 wp.x, wp.y, wp.z);
