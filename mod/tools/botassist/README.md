@@ -1226,11 +1226,15 @@ its body" (1,822 of 2,620 stuck reports in one botassist.log, most on de_dust, S
   (`LADDER_WAIT_MAX`) the ladder's ends cost `NAV_AVOID_COST` for 12 s, so it takes another way if there is one,
   else this ladder without waiting. botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on
   it, N walking up to it", "bot N gave up waiting for ladder L after 8 s".
-- In each other's way (`NavProgress`, when a bot is stuck): `PlayerInTheWay` traces the hull with people in it, or
-  takes the nearest player within 48 u on the side it's going. Then the area ahead isn't avoided and the bot doesn't
-  walk back: of two bots the one with the higher `CrowdKey` steps aside for 1 s (`StepAside`: 64 u to a free side,
-  else back), the other keeps going; for a person, or a bot botassist doesn't drive, it steps aside. botassist.log:
-  "stuck: ... : bot 'X' in the way, steps aside | keeps going (the other one steps aside)".
+- In each other's way (`NavProgress`, when a bot is stuck; `WayDecision`): `PlayerInTheWay` traces the hull with
+  people in it, or takes the nearest player within 48 u on the side it's going. Someone moving (a bot botassist drives
+  that walked its path within 0.5 s and isn't waiting at a ladder; anyone else faster than 30 u/s) will be out of the
+  way soon: the area ahead isn't avoided and the bot doesn't walk back; of two bots the one with the higher `CrowdKey`
+  steps aside for 1 s (`StepAside`: 64 u to a free side, else back), the other keeps going; for a person, or a bot
+  botassist doesn't drive, it steps aside. Someone standing still won't move, so it's gone around like a wall: the area
+  ahead avoided and, the second time, walking back. (Keeping going into a bot holding its holdout place was a deadlock:
+  on de_dust one bot pushed into another 36 times in a row.) botassist.log: "stuck: ... : bot 'X' in the way, steps
+  aside | keeps going (the other one steps aside) | standing still: goes around".
 - Holdout places (modes/zombie_holdout.inl): see the holdout section.
 - Held still (`HeldStill`, at the top of `NavProgress`): a bot with a max speed of 1 or `FL_FROZEN`, the game holding
   it (freeze time, Soccer's kickoff), isn't counted as stuck. At Soccer's kickoff 9 bots were counted every 1.5 s for

@@ -7,8 +7,8 @@
 //  - holdout places: a bot takes the place none of its group stands on (the fewest, the lowest first), so a bot that
 //    joins doesn't walk onto one that's taken when an earlier one was infected; the places are the spot's areas that
 //    SpreadPoints keeps apart (HOLD_PLACE_GAP).
-//  - in each other's way: of two bots, the one with the lower key keeps going and the other steps aside; a person in
-//    the way always gets the way.
+//  - in each other's way (WayDecision): someone standing still is gone around like a wall; of two moving bots, the one
+//    with the lower key keeps going and the other steps aside; a moving person always gets the way.
 //  - blocked links: a link between two areas that stuck bots ran into a wall on, LINK_BLOCK_HITS times, is one every
 //    bot's path goes around (NavBlockCost in botassist.cpp) till it's kept no longer.
 //  - crowds: how many players are bunched up, for botassist.log (CrowdReport, modes/zombie_humans.inl).
@@ -76,10 +76,22 @@ static std::vector<int> SpreadPoints(const std::vector<std::pair<float, float>>&
     return kept;
 }
 
-// this bot steps aside for the one in its way: always for a person, for a bot with a lower key
-static bool GivesWay(bool otherIsBot, long long myKey, long long otherKey)
+// what this bot does about the player in its way. Someone standing still (a bot holding its place, a person not moving)
+// isn't going to step aside: it's in the way like a wall, so this bot goes around (keeping going into it was a
+// deadlock: de_dust, a bot pushed into one holding its holdout place 36 times in a row). Of two moving bots the one with
+// the lower key keeps going and the other steps aside; a moving person (or a bot botassist doesn't drive) gets the way.
+// otherIsBot: a bot botassist drives
+enum
 {
-    return !otherIsBot || otherKey < myKey;
+    WAY_KEEP_GOING,
+    WAY_STEP_ASIDE,
+    WAY_GO_AROUND
+};
+static int WayDecision(bool otherIsBot, bool otherMoving, long long myKey, long long otherKey)
+{
+    if (!otherMoving)
+        return WAY_GO_AROUND;
+    return !otherIsBot || otherKey < myKey ? WAY_STEP_ASIDE : WAY_KEEP_GOING;
 }
 
 // a link between two nav areas that a bot couldn't walk (a wall or door the mesh doesn't know about): from LINK_BLOCK_HITS

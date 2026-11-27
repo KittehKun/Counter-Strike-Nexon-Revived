@@ -1951,18 +1951,25 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
     if (st.navStuck >= 12 && CoopMode() && CoopUnstick(bot, st, pos))
         return; // ~20 s stuck in a co-op mode (a Zombie Shelter bot that spawned on a roof): put on the ground nearby
     V3 wp = st.pathIndex < st.path.size() ? st.path[st.pathIndex] : goal;
-    // another player in the way: the area ahead is fine, so no other way and no walking back. Of two bots the one with
-    // the higher key steps aside and the other keeps going; for a person (or a bot botassist doesn't drive) it steps aside.
+    // another player in the way (crowding.inl's WayDecision). Moving, it will be out of the way soon: the area ahead is
+    // fine, so no other way and no walking back; of two bots the one with the higher key steps aside and the other keeps
+    // going, for a person (or a bot botassist doesn't drive) it steps aside. Standing still (holding its holdout place,
+    // waiting at a ladder), it won't move: it's gone around like a wall, the area ahead avoided and, the second time,
+    // walking back. Moving: a driven bot that walked its path within 0.5 s and isn't waiting at a ladder, anyone else
+    // going faster than 30 u/s.
     void* blocker = PlayerInTheWay(bot, pos, wp);
-    bool asides = false;
+    int way = WAY_KEEP_GOING;
     if (blocker)
     {
         BotState* o = (F<int>(Vars(blocker), EV_FLAGS) & FL_FAKECLIENT) ? FindBotState(blocker) : nullptr;
-        asides = GivesWay(o != nullptr, CrowdKey(st, bot), o ? CrowdKey(*o, blocker) : 0);
-        if (asides)
+        bool moving = o ? now >= o->navLastCall && now - o->navLastCall < 0.5f && now >= o->ladderWaitUntil
+                        : Len2D(Vec((float*)(Vars(blocker) + EV_VELOCITY))) > 30.0f;
+        way = WayDecision(o != nullptr, moving, CrowdKey(st, bot), o ? CrowdKey(*o, blocker) : 0);
+        if (way == WAY_STEP_ASIDE)
             StepAside(bot, st, pos, wp, now);
     }
-    int ahead = blocker ? -1 : AreaAt(wp), here = AreaAt(pos);
+    bool aroundIt = !blocker || way == WAY_GO_AROUND; // (a wall, or someone standing there)
+    int ahead = aroundIt ? AreaAt(wp) : -1, here = AreaAt(pos);
     // what its body runs into on its way (no player in the way): a wall or door the mesh links through marks that link for
     // every bot (NavBlockNote)
     TraceResult tr = {};
@@ -1985,7 +1992,7 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
             st.navAvoid.erase(st.navAvoid.begin());
         st.navAvoid.push_back({ ahead, now + NAV_AVOID_TIME });
     }
-    if (st.navStuck >= 2 && !blocker)
+    if (st.navStuck >= 2 && aroundIt)
         for (size_t i = st.navCrumbs.size(); i-- > 0;)
             if (Len2D(st.navCrumbs[i] - pos) >= NAV_BACK_MIN)
             {
@@ -2001,7 +2008,8 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
         Log("stuck: bot %d at (%.0f %.0f %.0f) going to (%.0f %.0f %.0f) by (%.0f %.0f %.0f), %d in a row: %s '%s' in the way, %s",
             st.slot, pos.x, pos.y, pos.z, goal.x, goal.y, goal.z, wp.x, wp.y, wp.z, st.navStuck,
             (F<int>(Vars(blocker), EV_FLAGS) & FL_FAKECLIENT) ? "bot" : "player", String(F<int>(Vars(blocker), EV_NETNAME)),
-            asides ? "steps aside" : "keeps going (the other one steps aside)");
+            way == WAY_GO_AROUND ? "standing still: goes around" : way == WAY_STEP_ASIDE ? "steps aside"
+                                                                         : "keeps going (the other one steps aside)");
     else if (reports++ < 300)
     {
         const char* model = tr.pHit ? String(F<int>(Vars(tr.pHit), 0xc8)) : nullptr;
