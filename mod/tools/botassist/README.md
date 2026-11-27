@@ -1239,9 +1239,12 @@ its body" (1,822 of 2,620 stuck reports in one botassist.log, most on de_dust, S
   takes another way if there is one, else this ladder without waiting. A bot within 64 u of the ladder (`LADDER_FOOT`),
   not waiting itself, that got no 16 u closer in 3 s (`LadderTurnLost`) has lost its turn: it keeps trying, but the
   others no longer wait for it (on zm_chosun one tried to get on at the top 12 times in 15 s, and the line behind it
-  gave up one by one). botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on it, N walking
-  up to it", "bot N gave up waiting for ladder L after N s", "bot N lost its turn at ladder L (up|down): at its foot 3 s
-  without getting on, the next one goes"; the perf lines count climbs, waits, give-ups and turns lost.
+  gave up one by one). Each try to get on takes a bot out of the line for a moment; back at the same ladder within 5 s
+  (`LADDER_KEEP`, `LadderClockKeeps`) it keeps its clock, else one trying every second never lost its turn.
+  botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on it, N walking up to it", "bot N gave
+  up waiting for ladder L after N s: ... (ahead: bot N D u [waiting], ...; N on it)", "bot N lost its turn at ladder L
+  (up|down): at its foot 3 s without getting on, the next one goes"; the perf lines count climbs, waits, give-ups and
+  turns lost.
 - In each other's way (`NavProgress`, when a bot is stuck; `WayDecision`): `PlayerInTheWay` traces the hull with
   people in it, or takes the nearest player within 48 u on the side it's going. Someone moving (a bot botassist drives
   that walked its path within 0.5 s and isn't waiting at a ladder; anyone else faster than 30 u/s) will be out of the

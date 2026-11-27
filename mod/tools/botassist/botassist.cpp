@@ -6699,23 +6699,25 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
         float vz = ((float*)(v + EV_VELOCITY))[2];
         others.push_back({ true, vz > 20.0f ? 1 : vz < -20.0f ? -1 : 0, o.z - 36.0f, 0.0f, 0 });
     });
-    // walking up to it: the other bots here (entries older than a few moves are gone); one at the foot that isn't
-    // getting on has lost its turn (crowding.inl's LadderTurnLost)
+    // walking up to it: the other bots here that were in the line a moment ago (an entry is kept LADDER_KEEP for its
+    // clock, through a try to get on); one at the foot that isn't getting on has lost its turn (crowding.inl's
+    // LadderTurnLost)
     for (size_t i = g_ladderQueue.size(); i-- > 0;)
     {
         LadderApproach& a = g_ladderQueue[i];
         if (a.bot == bot)
             continue;
-        if (now - a.at > 0.3f || now < a.at)
+        if (now < a.at || now - a.at > LADDER_KEEP)
         {
             g_ladderQueue.erase(g_ladderQueue.begin() + i);
             continue;
         }
-        if (a.ladder == ladder)
+        if (a.ladder == ladder && now - a.at <= 0.3f)
             others.push_back({ false, 0, 0.0f, a.dist, a.key, LadderTurnLost(a.waiting, a.dist, a.bestAt, now) });
     }
-    // this bot's own entry: new (or for another ladder, or after a pause) starts its clock; waiting, or LADDER_CLOSER
-    // nearer than its nearest, starts it again
+    // this bot's own entry: new, for another ladder, or back after more than LADDER_KEEP starts its clock (back sooner,
+    // from a try to get on, it keeps it: LadderClockKeeps); waiting, or LADDER_CLOSER nearer than its nearest, starts it
+    // again
     LadderApproach* me = nullptr;
     for (LadderApproach& a : g_ladderQueue)
         if (a.bot == bot)
@@ -6726,7 +6728,7 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
         me = &g_ladderQueue.back();
         me->best = gap, me->bestAt = now;
     }
-    else if (me->ladder != ladder || now - me->at > 0.3f || now < me->at)
+    else if (!LadderClockKeeps(me->ladder, ladder, me->at, now))
     {
         *me = { bot, ladder, gap, key, now };
         me->best = gap, me->bestAt = now;
@@ -6784,8 +6786,28 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
         st.ladderWaitUntil = 0;
         st.nextRepath = 0;
         if (reports++ < 80)
-            Log("bot %d gave up waiting for ladder %d after %.0f s: another way, or this ladder without waiting", st.slot, ladder,
-                waited);
+        {
+            // who it waited for: the ones ahead of it in line (distance, waiting or not) and how many were on it
+            std::string ahead;
+            int on = 0;
+            for (const LadderOther& o : others)
+                on += o.on;
+            for (const LadderApproach& a : g_ladderQueue)
+            {
+                if (a.bot == bot || a.ladder != ladder || now - a.at > 0.3f)
+                    continue;
+                bool lost = LadderTurnLost(a.waiting, a.dist, a.bestAt, now);
+                if (lost || !(a.dist + LADDER_TIE < gap || (fabsf(a.dist - gap) <= LADDER_TIE && a.key < key)))
+                    continue;
+                BotState* o = FindBotState(a.bot);
+                char b[64];
+                snprintf(b, sizeof(b), "%sbot %d %.0f u%s", ahead.empty() ? "" : ", ", o ? o->slot : -1, a.dist,
+                         a.waiting ? " waiting" : "");
+                ahead += b;
+            }
+            Log("bot %d gave up waiting for ladder %d after %.0f s: another way, or this ladder without waiting (ahead: %s; %d on "
+                "it)", st.slot, ladder, waited, ahead.empty() ? "nobody" : ahead.c_str(), on);
+        }
         return false;
     }
     st.ladderWaitUntil = now + 0.3f;
