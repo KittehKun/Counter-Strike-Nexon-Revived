@@ -9,6 +9,8 @@
 //    SpreadPoints keeps apart (HOLD_PLACE_GAP).
 //  - in each other's way: of two bots, the one with the lower key keeps going and the other steps aside; a person in
 //    the way always gets the way.
+//  - blocked links: a link between two areas that stuck bots ran into a wall on, LINK_BLOCK_HITS times, is one every
+//    bot's path goes around (NavBlockCost in botassist.cpp) till it's kept no longer.
 
 // a player near a ladder: on it (dir 1 up, -1 down, 0 not moving; feetZ), or walking up to it (dist from the ladder)
 struct LadderOther
@@ -77,4 +79,49 @@ static std::vector<int> SpreadPoints(const std::vector<std::pair<float, float>>&
 static bool GivesWay(bool otherIsBot, long long myKey, long long otherKey)
 {
     return !otherIsBot || otherKey < myKey;
+}
+
+// a link between two nav areas that a bot couldn't walk (a wall or door the mesh doesn't know about): from LINK_BLOCK_HITS
+// stuck reports on, every bot's path goes another way while there is one. ent/cls: what was in the way (only the game side
+// reads them: once that's gone, a broken breakable, the link is open again)
+struct BlockedLink
+{
+    int from, to, hits;
+    float last, until;
+    void* ent;
+    int cls;
+};
+static const int LINK_BLOCK_HITS = 2, LINK_BLOCK_MAX = 64;
+
+// one more stuck report on from -> to: counted, and kept keep s from now. A full list drops the one ending first.
+static void NoteBlockedLink(std::vector<BlockedLink>& links, int from, int to, float now, float keep, void* ent, int cls)
+{
+    for (BlockedLink& l : links)
+        if (l.from == from && l.to == to)
+        {
+            l.hits++;
+            l.last = now;
+            l.until = now + keep;
+            l.ent = ent;
+            l.cls = cls;
+            return;
+        }
+    if ((int)links.size() >= LINK_BLOCK_MAX)
+    {
+        size_t first = 0;
+        for (size_t i = 1; i < links.size(); i++)
+            if (links[i].until < links[first].until)
+                first = i;
+        links.erase(links.begin() + first);
+    }
+    links.push_back({ from, to, 1, now, now + keep, ent, cls });
+}
+
+// from -> to blocked for everyone now (a clock that went back, a new map, doesn't count)
+static bool LinkBlocked(const std::vector<BlockedLink>& links, int from, int to, float now)
+{
+    for (const BlockedLink& l : links)
+        if (l.from == from && l.to == to)
+            return l.hits >= LINK_BLOCK_HITS && now >= l.last && now < l.until;
+    return false;
 }
