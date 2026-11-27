@@ -1896,6 +1896,10 @@ static void StepAside(void* bot, BotState& st, V3 pos, V3 wp, float now)
     st.navBackUntil = now + NAV_ASIDE_TIME;
 }
 
+// botassist.log's perf lines, for comparing builds: stuck reports in the last 30 s by what was in the way (the
+// "stuck:" lines stop at 300 a map, these don't), and how many of them were bots the game held still
+static int g_stuckCounts[4]; // a player, something, nothing; held still (of those)
+
 static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
 {
     // waiting for its turn at a ladder (LadderQueueWait; NavTraverse keeps it waiting), or held where it is by the game
@@ -1969,6 +1973,9 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
         if (got < 0.99f && tr.pHit && ahead >= 0 && here >= 0 && ahead != here)
             NavBlockNote(here, ahead, tr.pHit, now);
     }
+    g_stuckCounts[blocker ? 0 : got >= 0.99f || !tr.pHit ? 2 : 1]++;
+    if (HeldStill(bot))
+        g_stuckCounts[3]++; // (never: a held bot returns above; counted for the same line as build A)
     if (ahead >= 0 && ahead != here)
     {
         for (size_t i = st.navAvoid.size(); i-- > 0;)
@@ -5985,11 +5992,16 @@ static void PerfReport()
                 parts += b;
             }
             Log("perf: bot move hook by part (ms/s): %s", parts.c_str());
+            Log("perf: stuck reports %d (a player in the way %d, something %d, nothing %d; %d of them held still)",
+                g_stuckCounts[0] + g_stuckCounts[1] + g_stuckCounts[2], g_stuckCounts[0], g_stuckCounts[1], g_stuckCounts[2],
+                g_stuckCounts[3]);
         }
     }
     for (double& d : g_perfPart)
         d = 0;
     g_perfMoves = g_perfPaths = g_perfAreaAt = 0;
+    for (int& c : g_stuckCounts)
+        c = 0;
     g_perfMoveSec = g_perfPathSec = g_perfFrameSec = 0;
     since = now;
     next = now + 30.0;
