@@ -3,7 +3,9 @@
 //
 //  - ladders: one bot climbs at a time each way. A second one follows a bot going the same way once it is LADDER_GAP
 //    past their end; one coming the other way (or stopped on it) waits till it's off. Bots walking up to the ladder
-//    take turns by distance to it (within LADDER_TIE: by key), so two arriving together don't both go.
+//    take turns by distance to it (within LADDER_TIE: by key), so two arriving together don't both go. One at the foot
+//    that doesn't get on loses its turn (LadderTurnLost); a bot gives up waiting after LadderWaitLimit (longer the more
+//    are ahead of it).
 //  - holdout places: a bot takes the place none of its group stands on (the fewest, the lowest first), so a bot that
 //    joins doesn't walk onto one that's taken when an earlier one was infected; the places are points inside the
 //    spot's areas (GridPoints) that SpreadPoints keeps apart (HOLD_PLACE_GAP).
@@ -21,6 +23,7 @@ struct LadderOther
     float feetZ;
     float dist;
     long long key;
+    bool lost = false; // walking up to it: lost its turn (LadderTurnLost), nobody waits for it
 };
 static const float LADDER_GAP = 80.0f, LADDER_TIE = 8.0f;
 
@@ -36,10 +39,41 @@ static bool LadderMustWait(int myDir, float myDist, long long myKey, float entry
                 return true; // coming the other way, stopped, or still at this end
             continue;
         }
+        if (o.lost)
+            continue; // at the foot without getting on: the next one goes
         if (o.dist + LADDER_TIE < myDist || (fabsf(o.dist - myDist) <= LADDER_TIE && o.key < myKey))
             return true; // nearer the ladder: its turn first
     }
     return false;
+}
+
+// A bot at the foot of a ladder that doesn't get on (zm_chosun: one tried to get on at the top 12 times in 15 s) held
+// the line behind it till each one gave up. One within LADDER_FOOT of the ladder, not waiting itself, that got no
+// closer (LADDER_CLOSER, the game side) for LADDER_TURN_TIME has lost its turn: it keeps trying, the next one goes.
+// bestAt: when it last got closer.
+static const float LADDER_FOOT = 64.0f, LADDER_TURN_TIME = 3.0f, LADDER_CLOSER = 16.0f;
+static bool LadderTurnLost(bool waiting, float gap, float bestAt, float now)
+{
+    return !waiting && gap < LADDER_FOOT && now - bestAt > LADDER_TURN_TIME;
+}
+
+// the bots walking up to the ladder whose turn comes before this one's (the ones LadderMustWait waits for, not on it)
+static int LadderAhead(float myDist, long long myKey, const std::vector<LadderOther>& others)
+{
+    int n = 0;
+    for (const LadderOther& o : others)
+        n += !o.on && !o.lost &&
+             (o.dist + LADDER_TIE < myDist || (fabsf(o.dist - myDist) <= LADDER_TIE && o.key < myKey));
+    return n;
+}
+
+// how long a bot waits for its turn before it goes another way: 8 s, and 3 s more for each one ahead of it, at most
+// 20 s (at round start 5 bots wanted one ladder, and the last ones gave up while the line was moving)
+static const float LADDER_WAIT_MIN = 8.0f, LADDER_WAIT_EACH = 3.0f, LADDER_WAIT_CAP = 20.0f;
+static float LadderWaitLimit(int ahead)
+{
+    float t = LADDER_WAIT_MIN + LADDER_WAIT_EACH * (float)(ahead > 0 ? ahead : 0);
+    return t < LADDER_WAIT_CAP ? t : LADDER_WAIT_CAP;
 }
 
 // the place (0 .. places-1) the fewest of taken stand on, the lowest of those
