@@ -1237,11 +1237,15 @@ its body" (1,822 of 2,620 stuck reports in one botassist.log, most on de_dust, S
   (`LADDER_WAIT_MAX`) the ladder's ends cost `NAV_AVOID_COST` for 12 s, so it takes another way if there is one,
   else this ladder without waiting. botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on
   it, N walking up to it", "bot N gave up waiting for ladder L after 8 s".
-- In each other's way (`NavProgress`, when a bot is stuck): `PlayerInTheWay` traces the hull with people in it, or
-  takes the nearest player within 48 u on the side it's going. Then the area ahead isn't avoided and the bot doesn't
-  walk back: of two bots the one with the higher `CrowdKey` steps aside for 1 s (`StepAside`: 64 u to a free side,
-  else back), the other keeps going; for a person, or a bot botassist doesn't drive, it steps aside. botassist.log:
-  "stuck: ... : bot 'X' in the way, steps aside | keeps going (the other one steps aside)".
+- In each other's way (`NavProgress`, when a bot is stuck; `WayDecision`): `PlayerInTheWay` traces the hull with
+  people in it, or takes the nearest player within 48 u on the side it's going. Someone moving (a bot botassist drives
+  that walked its path within 0.5 s and isn't waiting at a ladder; anyone else faster than 30 u/s) will be out of the
+  way soon: the area ahead isn't avoided and the bot doesn't walk back; of two bots the one with the higher `CrowdKey`
+  steps aside for 1 s (`StepAside`: 64 u to a free side, else back), the other keeps going; for a person, or a bot
+  botassist doesn't drive, it steps aside. Someone standing still won't move, so it's gone around like a wall: the area
+  ahead avoided and, the second time, walking back. (Keeping going into a bot holding its holdout place was a deadlock:
+  on de_dust one bot pushed into another 36 times in a row.) botassist.log: "stuck: ... : bot 'X' in the way, steps
+  aside | keeps going (the other one steps aside) | standing still: goes around".
 - Holdout places (modes/zombie_holdout.inl): see the holdout section.
 - Held still (`HeldStill`, at the top of `NavProgress`): a bot with a max speed of 1 or `FL_FROZEN`, the game holding
   it (freeze time, Soccer's kickoff), isn't counted as stuck. At Soccer's kickoff 9 bots were counted every 1.5 s for
@@ -1418,9 +1422,11 @@ turned to the zombie kept "backwards" of its old view and ran into it, 25285f1).
 stand and shoot when a zombie in sight within 900 is within 50 degrees of their way; 5 s like that, another spot.
 Walkers pick places away from the zombies they see.
 
-Places in a spot: its areas nearest the middle first, each 72 u (`HOLD_PLACE_GAP`, `SpreadPoints`) from the
-others; side by side areas of the mesh had the group standing shoulder to shoulder ("holdout: N spots ...: (x y z) N
-places"). A bot takes the place the fewest of its group stand on (`LeastUsedPlace`): it took "the next number", the
+Places in a spot: points inside its areas, every 32 u and at least 16 u from their edges, on the floor (`GridPoints`,
+`HOLD_PLACE_STEP`, `HOLD_PLACE_INSET`), nearest the middle first, each 72 u (`HOLD_PLACE_GAP`, `SpreadPoints`) from the
+others, up to 12 (`HOLD_PLACES_MAX`); side by side points had the group standing shoulder to shoulder ("holdout: N
+spots ...: (x y z) N places"). The areas' middles alone gave de_dust's spots 1 or 2 places for groups of 5, so bots
+walked onto a place another one stood on. A bot takes the place the fewest of its group stand on (`LeastUsedPlace`): it took "the next number", the
 size of the group, so once an earlier bot was infected the next one to join walked onto the place of one still there.
 A bot that turns zombie frees its spot at once: its old spot counted for the group till its next life as a human, so
 a new round's groups and places started from the last round's.

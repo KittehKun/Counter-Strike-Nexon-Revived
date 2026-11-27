@@ -8,7 +8,7 @@
 //  - each new life a human bot picks one of the first K spots (K: one per HOLD_GROUP humans, 2 to 6): the nearest one
 //    that isn't full, so the groups are about the same size
 //  - it walks there (shooting what it meets: only its legs are driven) and holds its own place there (the spot's
-//    areas, one per bot), standing still while it shoots; zombies closer than HOLD_FLEE make it back off a little
+//    points inside its areas, one per bot), standing still while it shoots; zombies closer than HOLD_FLEE make it back off a little
 //  - alone at its spot (the rest of its group turned or died), it joins the spot with the most humans left
 //  - a few bots walk the map alone instead (one per HOLD_ROAM_PER humans, from HOLD_ROAM_FROM humans): to a random
 //    place of the mesh's main part HOLD_ROAM_MIN to HOLD_ROAM_MAX away, then another
@@ -17,12 +17,16 @@ static const int HOLD_SPOTS = 8, HOLD_GROUP = 4, HOLD_ROAM_PER = 8, HOLD_ROAM_FR
 static const float HOLD_ROAM_MIN = 700.0f, HOLD_ROAM_MAX = 2500.0f, HOLD_ROAM_TIME = 25.0f;
 static const float HOLD_SEPARATION = 900.0f, HOLD_RADIUS = 220.0f, HOLD_FLEE = 170.0f, HOLD_MIN_SIZE = 40.0f;
 static const float HOLD_PLACE_GAP = 72.0f; // between two places of a spot (crowding.inl's SpreadPoints)
+// the places come from points this far apart inside the spot's areas, this far from their edges (crowding.inl's
+// GridPoints); a spot keeps at most HOLD_PLACES_MAX
+static const float HOLD_PLACE_STEP = 32.0f, HOLD_PLACE_INSET = 16.0f;
+static const int HOLD_PLACES_MAX = 12;
 
 struct HoldSpot
 {
     V3 at;
     int area;
-    std::vector<int> stand; // areas around it to stand on
+    std::vector<V3> stand; // places around it to stand on
 };
 struct HoldBot
 {
@@ -140,25 +144,32 @@ static void HoldPickSpots()
         HoldSpot s;
         s.at = at;
         s.area = c.area;
-        // the places: the spot's areas nearest its middle first, each HOLD_PLACE_GAP from the others (side by side areas of
-        // the mesh put the group shoulder to shoulder)
-        std::vector<int> inSpot;
+        // the places: points inside the spot's areas (every HOLD_PLACE_STEP, HOLD_PLACE_INSET from their edges, on the
+        // floor), nearest its middle first, each HOLD_PLACE_GAP from the others (side by side points put the group
+        // shoulder to shoulder). The areas' middles alone gave de_dust's spots 1 or 2 places for groups of 5: the others
+        // walked onto a place a bot already stood on, and pushed into it.
+        std::vector<V3> inSpot;
         for (size_t j = 0; j < n; j++)
         {
             const NavArea& b = g_nav.areas[j];
-            if (Len2D(b.center - at) < HOLD_RADIUS && fabsf(b.center.z - at.z) < 60.0f && part[j] == best && !NavAreaHurts((int)j))
-                inSpot.push_back((int)j);
+            if (part[j] != best || NavAreaHurts((int)j) || Len2D(b.center - at) > HOLD_RADIUS + 400.0f)
+                continue;
+            for (auto& xy : GridPoints(b.lo[0], b.lo[1], b.hi[0], b.hi[1], HOLD_PLACE_STEP, HOLD_PLACE_INSET))
+            {
+                V3 q{ xy.first, xy.second, AreaZ(b, xy.first, xy.second) };
+                if (Len2D(q - at) < HOLD_RADIUS && fabsf(q.z - at.z) < 60.0f)
+                    inSpot.push_back(q);
+            }
         }
-        std::sort(inSpot.begin(), inSpot.end(), [&](int x, int y) {
-            return Len2D(g_nav.areas[x].center - at) < Len2D(g_nav.areas[y].center - at);
-        });
+        std::sort(inSpot.begin(), inSpot.end(), [&](const V3& x, const V3& y) { return Len2D(x - at) < Len2D(y - at); });
         std::vector<std::pair<float, float>> pts;
-        for (int j : inSpot)
-            pts.push_back({ g_nav.areas[j].center.x, g_nav.areas[j].center.y });
+        for (const V3& q : inSpot)
+            pts.push_back({ q.x, q.y });
         for (int k : SpreadPoints(pts, HOLD_PLACE_GAP))
-            s.stand.push_back(inSpot[k]);
+            if ((int)s.stand.size() < HOLD_PLACES_MAX)
+                s.stand.push_back(inSpot[k]);
         if (s.stand.empty())
-            s.stand.push_back(c.area);
+            s.stand.push_back(g_nav.areas[c.area].center);
         g_holdSpots.push_back(s);
         if ((int)g_holdSpots.size() >= HOLD_SPOTS)
             break;
@@ -418,7 +429,7 @@ static bool HoldoutMove(void* bot, BotState& st, float viewYaw, float& fwd, floa
         return false;
     const HoldSpot& s = g_holdSpots[h.spot];
     V3 me = Origin(bot);
-    V3 place = g_nav.areas[s.stand[h.place % s.stand.size()]].center;
+    V3 place = s.stand[h.place % s.stand.size()];
     float d = Len2D(place - me);
     if (d < 48.0f && fabsf(place.z - me.z) < 64.0f)
     {

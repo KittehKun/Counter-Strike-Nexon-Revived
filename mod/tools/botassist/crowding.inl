@@ -5,10 +5,10 @@
 //    past their end; one coming the other way (or stopped on it) waits till it's off. Bots walking up to the ladder
 //    take turns by distance to it (within LADDER_TIE: by key), so two arriving together don't both go.
 //  - holdout places: a bot takes the place none of its group stands on (the fewest, the lowest first), so a bot that
-//    joins doesn't walk onto one that's taken when an earlier one was infected; the places are the spot's areas that
-//    SpreadPoints keeps apart (HOLD_PLACE_GAP).
-//  - in each other's way: of two bots, the one with the lower key keeps going and the other steps aside; a person in
-//    the way always gets the way.
+//    joins doesn't walk onto one that's taken when an earlier one was infected; the places are points inside the
+//    spot's areas (GridPoints) that SpreadPoints keeps apart (HOLD_PLACE_GAP).
+//  - in each other's way (WayDecision): someone standing still is gone around like a wall; of two moving bots, the one
+//    with the lower key keeps going and the other steps aside; a moving person always gets the way.
 //  - blocked links: a link between two areas that stuck bots ran into a wall on, LINK_BLOCK_HITS times, is one every
 //    bot's path goes around (NavBlockCost in botassist.cpp) till it's kept no longer.
 //  - crowds: how many players are bunched up, for botassist.log (CrowdReport, modes/zombie_humans.inl).
@@ -76,10 +76,43 @@ static std::vector<int> SpreadPoints(const std::vector<std::pair<float, float>>&
     return kept;
 }
 
-// this bot steps aside for the one in its way: always for a person, for a bot with a lower key
-static bool GivesWay(bool otherIsBot, long long myKey, long long otherKey)
+// what this bot does about the player in its way. Someone standing still (a bot holding its place, a person not moving)
+// isn't going to step aside: it's in the way like a wall, so this bot goes around (keeping going into it was a
+// deadlock: de_dust, a bot pushed into one holding its holdout place 36 times in a row). Of two moving bots the one with
+// the lower key keeps going and the other steps aside; a moving person (or a bot botassist doesn't drive) gets the way.
+// otherIsBot: a bot botassist drives
+enum
 {
-    return !otherIsBot || otherKey < myKey;
+    WAY_KEEP_GOING,
+    WAY_STEP_ASIDE,
+    WAY_GO_AROUND
+};
+static int WayDecision(bool otherIsBot, bool otherMoving, long long myKey, long long otherKey)
+{
+    if (!otherMoving)
+        return WAY_GO_AROUND;
+    return !otherIsBot || otherKey < myKey ? WAY_STEP_ASIDE : WAY_KEEP_GOING;
+}
+
+// points to stand on in a nav area's rectangle (lo, hi): step apart, at least inset from its edges; along a side too
+// narrow for both insets, its middle. Holdout places come from these, not the areas' middles: de_dust's big areas left
+// a spot 1 or 2 places for 5 bots.
+static std::vector<std::pair<float, float>> GridPoints(float loX, float loY, float hiX, float hiY, float step, float inset)
+{
+    auto line = [&](float lo, float hi) {
+        std::vector<float> v;
+        if (hi - lo < 2 * inset || step <= 0)
+            v.push_back((lo + hi) * 0.5f);
+        else
+            for (float x = lo + inset; x <= hi - inset + 0.01f; x += step)
+                v.push_back(x);
+        return v;
+    };
+    std::vector<std::pair<float, float>> out;
+    for (float y : line(loY, hiY))
+        for (float x : line(loX, hiX))
+            out.push_back({ x, y });
+    return out;
 }
 
 // a link between two nav areas that a bot couldn't walk (a wall or door the mesh doesn't know about): from LINK_BLOCK_HITS
