@@ -1921,7 +1921,7 @@ static void StepAside(void* bot, BotState& st, V3 pos, V3 wp, float now)
 static int g_stuckCounts[4]; // a player, something, nothing; held still (of those)
 // the same for ladders (the "takes a ladder" lines stop at 60 a map, the waits at 80): climbs started, waits for a
 // turn, waits given up (LadderQueueWait)
-static int g_ladderCounts[3];
+static int g_ladderCounts[4]; // (and turns lost: LadderTurnLost)
 
 static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
 {
@@ -6109,8 +6109,8 @@ static void PerfReport()
             Log("perf: stuck reports %d (a player in the way %d, something %d, nothing %d; %d of them held still)",
                 g_stuckCounts[0] + g_stuckCounts[1] + g_stuckCounts[2], g_stuckCounts[0], g_stuckCounts[1], g_stuckCounts[2],
                 g_stuckCounts[3]);
-            Log("perf: ladders: %d climbs, %d waits for a turn, %d gave up waiting", g_ladderCounts[0], g_ladderCounts[1],
-                g_ladderCounts[2]);
+            Log("perf: ladders: %d climbs, %d waits for a turn, %d gave up waiting, %d turns lost", g_ladderCounts[0],
+                g_ladderCounts[1], g_ladderCounts[2], g_ladderCounts[3]);
         }
     }
     for (double& d : g_perfPart)
@@ -6632,9 +6632,10 @@ static bool NavRideStep(void* bot, BotState& st, const NavRide& r, V3 pos, V3 fe
 // on zm_chosun's ladders pushed into each other, the ones climbing up into the ones coming down. A bot within
 // LADDER_QUEUE of a ladder on its path waits while someone is on it the other way (or stopped, or still at this end),
 // or another bot walking up to it is nearer: LADDER_WAIT_BACK from the ladder, out of the way of whoever gets off.
-// After LADDER_WAIT_MAX it takes another way if there is one (the ladder's ends cost NAV_AVOID_COST), else this ladder
-// without waiting.
-static const float LADDER_QUEUE = 200.0f, LADDER_WAIT_BACK = 96.0f, LADDER_WAIT_MAX = 8.0f;
+// After LadderWaitLimit (8 s, 3 s more for each bot ahead of it, at most 20) it takes another way if there is one (the
+// ladder's ends cost NAV_AVOID_COST), else this ladder without waiting. One at the foot that doesn't get on for
+// LADDER_TURN_TIME (zm_chosun: a bot tried to get on at the top 12 times in 15 s) loses its turn, and the next one goes.
+static const float LADDER_QUEUE = 200.0f, LADDER_WAIT_BACK = 96.0f;
 struct LadderApproach
 {
     void* bot;
@@ -6642,6 +6643,9 @@ struct LadderApproach
     float dist;
     long long key;
     float at;
+    bool waiting = false;    // it waited for its turn last move
+    float best = 0, bestAt = 0; // its nearest to the ladder, and when it last got LADDER_CLOSER nearer (or waited)
+    bool lostLogged = false;
 };
 static std::vector<LadderApproach> g_ladderQueue; // bots walking up to a ladder, refreshed each move
 
@@ -6695,28 +6699,56 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
         float vz = ((float*)(v + EV_VELOCITY))[2];
         others.push_back({ true, vz > 20.0f ? 1 : vz < -20.0f ? -1 : 0, o.z - 36.0f, 0.0f, 0 });
     });
-    // walking up to it: the other bots here (entries older than a few moves are gone)
-    bool listed = false;
+    // walking up to it: the other bots here (entries older than a few moves are gone); one at the foot that isn't
+    // getting on has lost its turn (crowding.inl's LadderTurnLost)
     for (size_t i = g_ladderQueue.size(); i-- > 0;)
     {
         LadderApproach& a = g_ladderQueue[i];
         if (a.bot == bot)
-        {
-            a = { bot, ladder, gap, key, now };
-            listed = true;
             continue;
-        }
         if (now - a.at > 0.3f || now < a.at)
         {
             g_ladderQueue.erase(g_ladderQueue.begin() + i);
             continue;
         }
         if (a.ladder == ladder)
-            others.push_back({ false, 0, 0.0f, a.dist, a.key });
+            others.push_back({ false, 0, 0.0f, a.dist, a.key, LadderTurnLost(a.waiting, a.dist, a.bestAt, now) });
     }
-    if (!listed)
+    // this bot's own entry: new (or for another ladder, or after a pause) starts its clock; waiting, or LADDER_CLOSER
+    // nearer than its nearest, starts it again
+    LadderApproach* me = nullptr;
+    for (LadderApproach& a : g_ladderQueue)
+        if (a.bot == bot)
+            me = &a;
+    if (!me)
+    {
         g_ladderQueue.push_back({ bot, ladder, gap, key, now });
-    if (!LadderMustWait(up ? 1 : -1, gap, key, entryZ, others))
+        me = &g_ladderQueue.back();
+        me->best = gap, me->bestAt = now;
+    }
+    else if (me->ladder != ladder || now - me->at > 0.3f || now < me->at)
+    {
+        *me = { bot, ladder, gap, key, now };
+        me->best = gap, me->bestAt = now;
+    }
+    me->dist = gap, me->key = key, me->at = now;
+    if (me->waiting || gap < me->best - LADDER_CLOSER)
+        me->best = gap, me->bestAt = now;
+    if (!LadderTurnLost(me->waiting, gap, me->bestAt, now))
+        me->lostLogged = false;
+    else if (!me->lostLogged)
+    {
+        me->lostLogged = true;
+        g_ladderCounts[3]++;
+        static int lostReports = 0, lostLevel = -1;
+        if (lostLevel != g_nav.level)
+            lostLevel = g_nav.level, lostReports = 0;
+        if (lostReports++ < 40)
+            Log("bot %d lost its turn at ladder %d (%s): at its foot %.0f s without getting on, the next one goes", st.slot,
+                ladder, up ? "up" : "down", LADDER_TURN_TIME);
+    }
+    me->waiting = LadderMustWait(up ? 1 : -1, gap, key, entryZ, others);
+    if (!me->waiting)
         return false;
     static int reports = 0, reportLevel = -1;
     if (reportLevel != g_nav.level)
@@ -6733,7 +6765,8 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
                 up ? "up" : "down", gap, on, (int)others.size() - on);
     }
     st.ladderWaitLast = now;
-    if (now - st.ladderWaitSince > LADDER_WAIT_MAX)
+    float limit = LadderWaitLimit(LadderAhead(gap, key, others)); // (longer the more are ahead of it)
+    if (now - st.ladderWaitSince > limit)
     {
         // waited long enough: another way if there is one (the ends of this ladder cost more for a while), else this one
         for (int area : { l.bottom, l.top })
@@ -6744,6 +6777,7 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
                 st.navAvoid.push_back({ area, now + NAV_AVOID_TIME });
             }
         g_ladderCounts[2]++;
+        float waited = now - st.ladderWaitSince;
         st.ladderSkip = ladder;
         st.ladderSkipUntil = now + NAV_AVOID_TIME;
         st.ladderWaitSince = -1;
@@ -6751,7 +6785,7 @@ static bool LadderQueueWait(void* bot, BotState& st, V3 pos, V3 feet, const floa
         st.nextRepath = 0;
         if (reports++ < 80)
             Log("bot %d gave up waiting for ladder %d after %.0f s: another way, or this ladder without waiting", st.slot, ladder,
-                LADDER_WAIT_MAX);
+                waited);
         return false;
     }
     st.ladderWaitUntil = now + 0.3f;

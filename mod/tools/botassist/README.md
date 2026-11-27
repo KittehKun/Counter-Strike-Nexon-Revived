@@ -1233,10 +1233,15 @@ its body" (1,822 of 2,620 stuck reports in one botassist.log, most on de_dust, S
   the brush) coming the other way or stopped, or going the same way but less than 80 u (`LADDER_GAP`) from that end,
   or while another bot walking up to the ladder is nearer it (`g_ladderQueue`; as near within 8 u: the lower
   `CrowdKey`, formation slot then edict, goes first). Waiting it stands 96 u (`LADDER_WAIT_BACK`) from the ladder,
-  backing off if closer (not over a drop), with no repath and no stuck count (`ladderWaitUntil`). After 8 s
-  (`LADDER_WAIT_MAX`) the ladder's ends cost `NAV_AVOID_COST` for 12 s, so it takes another way if there is one,
-  else this ladder without waiting. botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on
-  it, N walking up to it", "bot N gave up waiting for ladder L after 8 s".
+  backing off if closer (not over a drop), with no repath and no stuck count (`ladderWaitUntil`). After
+  `LadderWaitLimit` (8 s, 3 s more for each bot ahead of it in line, at most 20 s: at round start 5 bots wanted one
+  ladder, and the last ones gave up while the line was moving) the ladder's ends cost `NAV_AVOID_COST` for 12 s, so it
+  takes another way if there is one, else this ladder without waiting. A bot within 64 u of the ladder (`LADDER_FOOT`),
+  not waiting itself, that got no 16 u closer in 3 s (`LadderTurnLost`) has lost its turn: it keeps trying, but the
+  others no longer wait for it (on zm_chosun one tried to get on at the top 12 times in 15 s, and the line behind it
+  gave up one by one). botassist.log: "bot N waits for its turn at ladder L (up|down, D u from it): N on it, N walking
+  up to it", "bot N gave up waiting for ladder L after N s", "bot N lost its turn at ladder L (up|down): at its foot 3 s
+  without getting on, the next one goes"; the perf lines count climbs, waits, give-ups and turns lost.
 - In each other's way (`NavProgress`, when a bot is stuck; `WayDecision`): `PlayerInTheWay` traces the hull with
   people in it, or takes the nearest player within 48 u on the side it's going. Someone moving (a bot botassist drives
   that walked its path within 0.5 s and isn't waiting at a ladder; anyone else faster than 30 u/s) will be out of the
