@@ -1232,6 +1232,24 @@ its body" (1,822 of 2,620 stuck reports in one botassist.log, most on de_dust, S
   else back), the other keeps going; for a person, or a bot botassist doesn't drive, it steps aside. botassist.log:
   "stuck: ... : bot 'X' in the way, steps aside | keeps going (the other one steps aside)".
 - Holdout places (modes/zombie_holdout.inl): see the holdout section.
+- Held still (`HeldStill`, at the top of `NavProgress`): a bot with a max speed of 1 or `FL_FROZEN`, the game holding
+  it (freeze time, Soccer's kickoff), isn't counted as stuck. At Soccer's kickoff 9 bots were counted every 1.5 s for
+  15 s (727 reports), and each one turned them off their way and walked them back; in a co-op mode 12 in a row put the
+  bot somewhere else (`CoopUnstick`). botassist.log, the first 3 a map: "stuck check: bot N held still (max speed X,
+  flags 0x..): not counted"; the "stuck:" lines show the max speed too.
+- Links nobody can walk (`NavBlockNote`, `NavBlockPrune`, `NavBlockCost`): the meshes link areas through func_walls,
+  doors, barricades and breakables (zm_chosun: a bot at the foot of func_wall *214 going for a point 93 u up, 17 stuck
+  reports in a row). A stuck report whose body trace hits something, the world included, marks the link from the bot's
+  area to the one ahead; from 2 reports (`LINK_BLOCK_HITS`) on, every bot's path costs 20000 (`NAV_BLOCK_COST`) more
+  through it: any other way first, the same way as before when there is none. Kept 90 s after the last report, a door
+  20 s, and no longer once what was in the way is gone (not solid any more, or another class at its edict). Up to 64
+  links (`LINK_BLOCK_MAX`), cleared with each map. botassist.log: "blocked: link A->B at (x y z): func_wall *214 in the
+  way, every bot goes around for 90 s", "blocked: link A->B open again (func_breakable gone)".
+- Crowds (`CrowdReport`, modes/zombie_humans.inl): every 10 s in a zombie mode, when 2 pairs of human bots are closer
+  than 64 u or 4 are within 128 u of one, botassist.log says where: "crowd: mode M, H human bots, P pairs within 64 u,
+  biggest group K within 128 u around 'name' at (x y z) (holdout spot S | no spot)", up to 300 a map. Outside the
+  holdout modes `ZombieGroupMove` hands a bot back to the game's AI 350 u from the group, so whatever bunches them up
+  there is the game's; these lines are for finding where.
 
 ## Deadly places in botassist's paths (shared)
 
