@@ -57,6 +57,15 @@ static bool LadderTurnLost(bool waiting, float gap, float bestAt, float now)
     return !waiting && gap < LADDER_FOOT && now - bestAt > LADDER_TURN_TIME;
 }
 
+// a bot back at the same ladder within LADDER_KEEP keeps its clock (and its nearest so far): every try to get on takes
+// it out of the line for a moment, and starting the clock again each time let one trying every second never lose its
+// turn (zm_chosun: up to 5 "lost its turn" each, 14% of the waits still given up). lastAt: its last move in the line.
+static const float LADDER_KEEP = 5.0f;
+static bool LadderClockKeeps(int oldLadder, int ladder, float lastAt, float now)
+{
+    return oldLadder == ladder && now >= lastAt && now - lastAt <= LADDER_KEEP;
+}
+
 // the bots walking up to the ladder whose turn comes before this one's (the ones LadderMustWait waits for, not on it)
 static int LadderAhead(float myDist, long long myKey, const std::vector<LadderOther>& others)
 {
