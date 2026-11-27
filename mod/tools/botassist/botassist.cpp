@@ -472,6 +472,9 @@ static bool CanSee(void* bot, V3 eye, void* target)
     return Trace(eye, Center(target), bot, 0, tr) || tr.pHit == target;
 }
 
+// how bunched up players are (the counting, no game calls)
+#include "crowding.inl"
+
 // ---------------------------------------------------------------- navigation mesh (CS:CZ .nav, version 5)
 // area attributes (CS:CZ): crouch, jump (a jump gets there), precise (no shortcuts or steering), no jump
 static const unsigned char NAV_CROUCH = 1, NAV_JUMP = 2, NAV_PRECISE = 4, NAV_NO_JUMP = 8;
@@ -834,6 +837,14 @@ static float NavAvoidCost(int area, float now)
 // +0x210) are listed again every 5 s (doors and buttons can turn them on and off); nav areas inside one are left out
 // of every path, a drop between areas costs extra beyond a step and drops above HURT_DROP_MAX are never taken.
 static const int EV_SOLID = 0x11c, EV_DMG = 0x210;
+// pev->maxspeed (entvars, CSO layout). The game holds a player in place with a max speed of 1 (the freeze time, Soccer's
+// kickoff) or FL_FROZEN. (Build A only counts those, in the perf lines.)
+static const int EV_MAXSPEED = 0x240;
+static bool HeldStill(void* e)
+{
+    unsigned char* v = Vars(e);
+    return F<float>(v, EV_MAXSPEED) <= 1.0f || (F<int>(v, EV_FLAGS) & FL_FROZEN);
+}
 static const float SAFE_DROP = 64.0f, HURT_DROP_MAX = 400.0f, DROP_COST = 4.0f;
 struct HurtZone
 {
@@ -1733,6 +1744,10 @@ static bool CoopMode();
 // was going into costs a lot for a while, so the new path takes another way if there is one, and the second time it also walks back
 // to where it came from before trying again.
 static const float NAV_STUCK_TIME = 1.5f, NAV_STUCK_MOVE = 64.0f, NAV_CRUMB_STEP = 96.0f, NAV_BACK_TIME = 1.2f, NAV_BACK_MIN = 80.0f;
+// botassist.log's perf lines, for comparing builds: stuck reports in the last 30 s by what was in the way (the
+// "stuck:" lines stop at 300 a map, these don't), and how many of them were bots the game held still
+static int g_stuckCounts[4]; // a player, something, nothing; held still (of those)
+
 static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
 {
     if (!st.navCrumbs.empty() && Len(pos - st.navCrumbs.back()) > 400.0f)
@@ -1784,10 +1799,13 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
     static int reports = 0, reportLevel = -1;
     if (reportLevel != g_nav.level)
         reportLevel = g_nav.level, reports = 0;
+    TraceResult tr;
+    float got = BodyFraction(bot, pos, V3{ wp.x, wp.y, pos.z }, tr);
+    g_stuckCounts[got >= 0.99f || !tr.pHit ? 2 : 1]++;
+    if (HeldStill(bot))
+        g_stuckCounts[3]++;
     if (reports++ < 300)
     {
-        TraceResult tr;
-        float got = BodyFraction(bot, pos, V3{ wp.x, wp.y, pos.z }, tr);
         const char* model = tr.pHit ? String(F<int>(Vars(tr.pHit), 0xc8)) : nullptr;
         Log("stuck: bot %d at (%.0f %.0f %.0f) going to (%.0f %.0f %.0f) by (%.0f %.0f %.0f), %d in a row: %s %s", st.slot, pos.x, pos.y, pos.z, goal.x, goal.y, goal.z, wp.x, wp.y, wp.z,
             st.navStuck, got >= 0.99f || !tr.pHit ? "nothing in the way of its body" : ClassName(tr.pHit), got >= 0.99f || !model ? "" : model);
@@ -5856,11 +5874,16 @@ static void PerfReport()
                 parts += b;
             }
             Log("perf: bot move hook by part (ms/s): %s", parts.c_str());
+            Log("perf: stuck reports %d (a player in the way %d, something %d, nothing %d; %d of them held still)",
+                g_stuckCounts[0] + g_stuckCounts[1] + g_stuckCounts[2], g_stuckCounts[0], g_stuckCounts[1], g_stuckCounts[2],
+                g_stuckCounts[3]);
         }
     }
     for (double& d : g_perfPart)
         d = 0;
     g_perfMoves = g_perfPaths = g_perfAreaAt = 0;
+    for (int& c : g_stuckCounts)
+        c = 0;
     g_perfMoveSec = g_perfPathSec = g_perfFrameSec = 0;
     since = now;
     next = now + 30.0;
@@ -5895,6 +5918,7 @@ static void HookedStartFrame()
         KnifeFixFrame();
         GrenadeFixFrame();
         SfFrame();
+        CrowdReport();
         if (CoopMode())
         {
             UpdateBarricades(); // zombies against barricades, bots or not
