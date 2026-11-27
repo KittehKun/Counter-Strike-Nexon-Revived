@@ -817,6 +817,14 @@ static float NavAvoidCost(int area, float now)
 // +0x210) are listed again every 5 s (doors and buttons can turn them on and off); nav areas inside one are left out
 // of every path, a drop between areas costs extra beyond a step and drops above HURT_DROP_MAX are never taken.
 static const int EV_SOLID = 0x11c, EV_DMG = 0x210;
+// pev->maxspeed (entvars, CSO layout). The game holds a player in place with a max speed of 1 (the freeze time, Soccer's
+// kickoff) or FL_FROZEN.
+static const int EV_MAXSPEED = 0x240;
+static bool HeldStill(void* e)
+{
+    unsigned char* v = Vars(e);
+    return F<float>(v, EV_MAXSPEED) <= 1.0f || (F<int>(v, EV_FLAGS) & FL_FROZEN);
+}
 static const float SAFE_DROP = 64.0f, HURT_DROP_MAX = 400.0f, DROP_COST = 4.0f;
 struct HurtZone
 {
@@ -1435,7 +1443,8 @@ struct BotState
     float ladderWaitUntil = 0;   // waiting: no repath, not stuck (NextWaypoint, NavProgress)
     int ladderSkip = -1;         // a ladder it gave up waiting for: taken without waiting till ladderSkipUntil
     float ladderSkipUntil = 0;
-    int onLink = 0;              // NavTraverse: the drawn link it is taking (its path flag), 0: none
+    float navHeldLog = -100;     // NavProgress: when it last logged that the game holds this bot still
+    int onLink = 0;             // NavTraverse: the drawn link it is taking (its path flag), 0: none
     float steerSide = 1, steerUntil = 0; // keeps going around an obstacle by the same side
     float jumpAt = -100;
     float strafeSide = 1, nextStrafe = 0;
@@ -1796,12 +1805,26 @@ static void StepAside(void* bot, BotState& st, V3 pos, V3 wp, float now)
 
 static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
 {
-    if (now < st.ladderWaitUntil)
+    // waiting for its turn at a ladder (LadderQueueWait; NavTraverse keeps it waiting), or held where it is by the game
+    // (Soccer's kickoff: 9 bots counted "stuck" every 1.5 s for 15 s, turned off their way and walked back): not stuck
+    bool held = HeldStill(bot);
+    if (now < st.ladderWaitUntil || held)
     {
-        // waiting for its turn at a ladder (LadderQueueWait): not stuck, and NavTraverse keeps it waiting
         st.navLastCall = now;
         st.navAnchor = pos;
         st.navAnchorAt = now;
+        if (held && st.navStuck)
+            st.navStuck = 0;
+        static int heldReports = 0, heldLevel = -1;
+        if (heldLevel != g_nav.level)
+            heldLevel = g_nav.level, heldReports = 0;
+        if (held && heldReports < 3 && now - st.navHeldLog > 30.0f)
+        {
+            st.navHeldLog = now;
+            heldReports++;
+            Log("stuck check: bot %d held still (max speed %.0f, flags 0x%x): not counted", st.slot,
+                F<float>(Vars(bot), EV_MAXSPEED), F<int>(Vars(bot), EV_FLAGS));
+        }
         return;
     }
     if (!st.navCrumbs.empty() && Len(pos - st.navCrumbs.back()) > 400.0f)
@@ -1874,8 +1897,10 @@ static void NavProgress(void* bot, BotState& st, V3 pos, V3 goal, float now)
         TraceResult tr;
         float got = BodyFraction(bot, pos, V3{ wp.x, wp.y, pos.z }, tr);
         const char* model = tr.pHit ? String(F<int>(Vars(tr.pHit), 0xc8)) : nullptr;
-        Log("stuck: bot %d at (%.0f %.0f %.0f) going to (%.0f %.0f %.0f) by (%.0f %.0f %.0f), %d in a row: %s %s", st.slot, pos.x, pos.y, pos.z, goal.x, goal.y, goal.z, wp.x, wp.y, wp.z,
-            st.navStuck, got >= 0.99f || !tr.pHit ? "nothing in the way of its body" : ClassName(tr.pHit), got >= 0.99f || !model ? "" : model);
+        // (max speed: HeldStill reads it; a bot the game holds some other way would show here, not stuck yet reported)
+        Log("stuck: bot %d at (%.0f %.0f %.0f) going to (%.0f %.0f %.0f) by (%.0f %.0f %.0f), %d in a row: %s %s (max speed %.0f)", st.slot, pos.x, pos.y, pos.z, goal.x, goal.y, goal.z, wp.x, wp.y, wp.z,
+            st.navStuck, got >= 0.99f || !tr.pHit ? "nothing in the way of its body" : ClassName(tr.pHit), got >= 0.99f || !model ? "" : model,
+            F<float>(Vars(bot), EV_MAXSPEED));
     }
 }
 
